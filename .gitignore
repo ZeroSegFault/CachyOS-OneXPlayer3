@@ -1,9 +1,8 @@
 __pycache__/
 *.pyc
 
-# Maintainer-local: device details, diagnosis notes, issue tracker workflow
+# Maintainer-local: device details, diagnosis notes
 AGENTS.local.md
 CLAUDE.local.md
 memory/
-docs/agents/
 .scratch/
