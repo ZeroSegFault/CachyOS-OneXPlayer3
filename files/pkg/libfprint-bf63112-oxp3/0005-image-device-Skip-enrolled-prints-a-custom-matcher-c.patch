@@ -1,0 +1,52 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: oxp3 <oxp3@localhost>
+Date: Wed, 7 Oct 2026 21:34:11 +1100
+Subject: [PATCH 5/7] image-device: Skip enrolled prints a custom matcher
+ cannot use during identify
+
+---
+ libfprint/fpi-image-device.c | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/libfprint/fpi-image-device.c b/libfprint/fpi-image-device.c
+index d64a747..a6235fc 100644
+--- a/libfprint/fpi-image-device.c
++++ b/libfprint/fpi-image-device.c
+@@ -325,6 +325,7 @@ fp_image_device_process_print (FpImageDevice *self,
+   else if (action == FPI_DEVICE_ACTION_IDENTIFY)
+     {
+       gint i;
++      guint unusable = 0;
+       GPtrArray *templates;
+       FpPrint *result = NULL;
+ 
+@@ -344,6 +345,18 @@ fp_image_device_process_print (FpImageDevice *self,
+             error = fpi_device_error_new_msg (FP_DEVICE_ERROR_GENERAL,
+                                               "Driver matcher failed without an error");
+ 
++          /* A stored print the custom matcher cannot use (corrupt, or from an
++           * older template format) must not stop the others being tried. */
++          if (match == FPI_MATCH_ERROR && cls->match &&
++              error->domain != FP_DEVICE_RETRY)
++            {
++              g_warning ("Skipping enrolled print %d that cannot be matched: %s",
++                         i, error->message);
++              g_clear_error (&error);
++              unusable++;
++              continue;
++            }
++
+           if (match == FPI_MATCH_SUCCESS && !error)
+             {
+               result = template;
+@@ -361,6 +374,10 @@ fp_image_device_process_print (FpImageDevice *self,
+         if (!fpi_print_copy_raw_data (print, result, &error))
+           result = NULL;
+ 
++      if (!result && !error && templates->len > 0 && unusable == templates->len)
++        error = fpi_device_error_new_msg (FP_DEVICE_ERROR_DATA_INVALID,
++                                          "No enrolled print can be used, please re-enroll");
++
+       if (!error || error->domain == FP_DEVICE_RETRY)
+         fpi_device_identify_report (device, result, g_steal_pointer (&print), g_steal_pointer (&error));
+ 

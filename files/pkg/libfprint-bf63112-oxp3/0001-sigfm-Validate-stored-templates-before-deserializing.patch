@@ -1,0 +1,87 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: oxp3 <oxp3@localhost>
+Date: Wed, 7 Oct 2026 21:32:11 +1100
+Subject: [PATCH 1/7] sigfm: Validate stored templates before deserializing
+ them
+
+---
+ libfprint/sigfm/binary.hpp | 21 +++++++++++++++++++++
+ libfprint/sigfm/sigfm.cpp  | 11 +++++++++++
+ 2 files changed, 32 insertions(+)
+
+diff --git a/libfprint/sigfm/binary.hpp b/libfprint/sigfm/binary.hpp
+index da9c740..b3dcd8d 100644
+--- a/libfprint/sigfm/binary.hpp
++++ b/libfprint/sigfm/binary.hpp
+@@ -111,6 +111,9 @@ public:
+                          bool> = true>
+     constexpr stream& read(Iter&& begin, std::size_t dist)
+     {
++        if (dist > store_.size()) {
++            throw std::runtime_error{"tried to read past the end of the stream"};
++        }
+         std::copy(store_.begin(), store_.begin() + dist, begin);
+         store_.erase(store_.begin(), store_.begin() + dist);
+         return *this;
+@@ -142,7 +145,21 @@ struct deserializer<cv::Mat> : public std::true_type {
+     {
+         int rows, cols, type;
+         in >> type >> rows >> cols;
++        // Stored data is untrusted: validate the header before allocating,
++        // and make sure the payload is really there before reading it.
++        if (rows < 0 || cols < 0 || type < 0 || type >= CV_DEPTH_MAX * CV_CN_MAX) {
++            throw std::runtime_error{"invalid matrix header"};
++        }
+         cv::Mat m;
++        if (rows == 0 || cols == 0) {
++            return m;
++        }
++        const std::size_t elem_size = CV_ELEM_SIZE(type);
++        if (elem_size == 0 ||
++            static_cast<std::size_t>(rows) >
++                in.size() / elem_size / static_cast<std::size_t>(cols)) {
++            throw std::runtime_error{"matrix larger than the stream"};
++        }
+         m.create(rows, cols, type);
+         in.read(m.data, std::distance(m.datastart, m.dataend));
+         return m;
+@@ -202,6 +219,10 @@ struct deserializer<std::vector<T>> : public std::true_type {
+     {
+         std::size_t size;
+         in >> size;
++        // Every element takes at least one byte of the stream.
++        if (size > in.size()) {
++            throw std::runtime_error{"vector larger than the stream"};
++        }
+         std::vector<T> vs;
+         vs.reserve(size);
+         for (std::size_t n = 0; n != size; ++n) {
+diff --git a/libfprint/sigfm/sigfm.cpp b/libfprint/sigfm/sigfm.cpp
+index 6890e16..d1c2bda 100644
+--- a/libfprint/sigfm/sigfm.cpp
++++ b/libfprint/sigfm/sigfm.cpp
+@@ -53,6 +53,14 @@ struct deserializer<SigfmImgInfo> : public std::true_type {
+     {
+         SigfmImgInfo info;
+         in >> info.keypoints >> info.descriptors;
++        // SIFT gives one 128 float descriptor per keypoint.
++        if (info.keypoints.size() !=
++                static_cast<std::size_t>(info.descriptors.rows) ||
++            (info.descriptors.rows > 0 &&
++             (info.descriptors.type() != CV_32FC1 ||
++              info.descriptors.cols != 128))) {
++            throw std::runtime_error{"keypoints and descriptors do not match"};
++        }
+         return info;
+     }
+ };
+@@ -111,6 +119,9 @@ SigfmImgInfo* sigfm_deserialize_binary(const unsigned char* bytes, int len)
+         bin::stream s{bytes, bytes + len};
+         auto info = std::make_unique<SigfmImgInfo>();
+         s >> *info;
++        if (s.size() != 0) {
++            return nullptr;
++        }
+         return info.release();
+     }
+     catch (const std::exception&) {

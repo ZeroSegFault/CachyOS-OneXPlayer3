@@ -1,0 +1,14 @@
+# Managed by CachyOS-OneXPlayer3 (modules/12-uki-boot.sh).
+# A newly installed kernel gets mkinitcpio's stock preset (no UKI, kernel
+# copy on the ESP); give it a UKI like the others. Runs after
+# 90-mkinitcpio-install.hook.
+[Trigger]
+Type = Path
+Operation = Install
+Operation = Upgrade
+Target = usr/lib/modules/*/vmlinuz
+
+[Action]
+Description = Giving new kernels a signed UKI...
+When = PostTransaction
+Exec = /usr/local/lib/oxp3/uki-presets --build

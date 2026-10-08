@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Managed by CachyOS-OneXPlayer3 (modules/12-uki-boot.sh).
+# Mask systemd's NvPCR definitions in the initramfs, as /etc/nvpcr masks do
+# on the running system: without a signed PCR policy in the UKI, systemd 262
+# fails to initialise them and prints a red FAILED line before the splash.
+
+build() {
+    local f
+    for f in /usr/lib/nvpcr/*.nvpcr; do
+        [[ -e $f ]] && add_symlink "/etc/nvpcr/${f##*/}" /dev/null
+    done
+}
+
+help() {
+    echo 'Masks systemd NvPCR definitions (no signed PCR policy on this system).'
+}

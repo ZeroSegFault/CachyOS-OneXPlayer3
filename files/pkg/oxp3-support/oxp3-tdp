@@ -1,0 +1,360 @@
+#!/usr/bin/python3
+"""oxp3-tdp: steamos-manager TdpLimit1 remote for Intel RAPL on the OneXPlayer 3.
+
+steamos-manager has no Intel RAPL backend, but relays its TdpLimit1 interface
+(the TDP slider in Steam's Quick Access Menu) to a "remote" registered in
+/etc/steamos-manager/remotes.d. This service is that remote.
+
+The OneXPlayer 3 exposes two independently enforced package power limits, the
+MSR zone (intel-rapl:0) and the MMIO zone (intel-rapl-mmio:0); the lower PL1
+wins. Every write therefore goes to both. Below the maximum, PL2 equals PL1 so
+the slider is a real cap, as on a Steam Deck; at the maximum the firmware's
+PL2 is restored for full boost.
+
+Steam sends a value as soon as its session starts: the slider position, or
+the maximum while its TDP toggle is off. The maximum is OneXPlayer's rated
+35 W (/etc/oxp3/tdp.conf), which lifts the firmware's 25 W MSR PL1. The value
+lasts for the current boot only; before Steam's first write after a boot the
+firmware's own limits stand. The firmware resets the MMIO limits on AC/DC
+changes and resume, so a reconcile loop and a resume hook re-apply the value.
+"""
+
+import errno
+import json
+import os
+import re
+import signal
+import sys
+import warnings
+
+import gi
+from gi.repository import Gio, GLib
+
+try:
+    gi.require_version("GLibUnix", "2.0")
+    from gi.repository import GLibUnix
+except (ImportError, ValueError):
+    GLibUnix = None
+
+BUS_NAME = "local.oxp3.Tdp"
+OBJECT_PATH = "/local/oxp3/Tdp"
+IFACE = "com.steampowered.SteamOSManager1.TdpLimit1"
+POWERCAP = "/sys/class/powercap"
+CONFIG = "/etc/oxp3/tdp.conf"
+RUNTIME = "/run/oxp3-tdp"
+STATE = f"{RUNTIME}/limit"
+FIRMWARE = f"{RUNTIME}/firmware.json"
+RECONCILE_SECONDS = 5
+
+INTROSPECTION = f"""
+<node>
+  <interface name="{IFACE}">
+    <property name="TdpLimit" type="u" access="readwrite"/>
+    <property name="TdpLimitMin" type="u" access="read"/>
+    <property name="TdpLimitMax" type="u" access="read"/>
+  </interface>
+</node>
+"""
+
+
+def log(msg):
+    print(msg, file=sys.stderr, flush=True)
+
+
+def read(path):
+    with open(path) as f:
+        return f.read().strip()
+
+
+def write_atomic(path, text):
+    tmp = f"{path}.tmp"
+    with open(tmp, "w") as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+def load_config():
+    cfg = {"min": 8, "max": 35}
+    try:
+        for line in open(CONFIG):
+            m = re.fullmatch(r"\s*(min|max)\s*=\s*(\d+)\s*", line.split("#", 1)[0])
+            if m:
+                cfg[m.group(1)] = int(m.group(2))
+    except FileNotFoundError:
+        pass
+    if cfg["min"] > cfg["max"]:
+        cfg["min"], cfg["max"] = cfg["max"], cfg["min"]
+    return cfg
+
+
+class Zone:
+    """One RAPL package zone, with its constraints looked up by name."""
+
+    def __init__(self, path):
+        self.path = path
+        self.constraints = {}
+        for entry in os.listdir(path):
+            m = re.fullmatch(r"constraint_(\d+)_name", entry)
+            if m:
+                self.constraints[read(os.path.join(path, entry))] = m.group(1)
+
+    def file(self, constraint):
+        return os.path.join(self.path, f"constraint_{self.constraints[constraint]}_power_limit_uw")
+
+    def get(self, constraint):
+        return int(read(self.file(constraint)))
+
+    def set(self, constraint, uw):
+        if self.get(constraint) != uw:
+            with open(self.file(constraint), "w") as f:
+                f.write(str(uw))
+
+
+def package_zones():
+    zones = []
+    for name in sorted(os.listdir(POWERCAP)):
+        path = os.path.join(POWERCAP, name)
+        if re.fullmatch(r"intel-rapl(-mmio)?:\d+", name) and read(f"{path}/name").startswith("package"):
+            zone = Zone(path)
+            if "long_term" in zone.constraints:
+                zones.append(zone)
+    return zones
+
+
+class TdpService:
+    def __init__(self):
+        self.cfg = load_config()
+        os.makedirs(RUNTIME, exist_ok=True)
+        # RAPL drivers can still be loading at boot; refresh_zones() picks up
+        # zones that appear later.
+        self.zones = package_zones()
+        if not self.zones:
+            log("no RAPL package zones yet; waiting for them")
+        self.firmware = self.snapshot_firmware()
+        self.limit = self.load_limit()
+        self.connection = None
+        self.failed = set()  # (zone path, constraint) writes the firmware rejects
+        self.drift_logged = False
+        self.reconcile_error_logged = False
+        if self.limit is not None:
+            self.apply()
+
+    def snapshot_firmware(self):
+        """Firmware limits as first seen in this boot (tmpfs), per zone.
+
+        A later start in the same boot (crash, package upgrade) must not take
+        our own writes for the firmware's, so recorded zones are kept and only
+        zones not seen before are added.
+        """
+        try:
+            snap = json.load(open(FIRMWARE))
+        except (FileNotFoundError, ValueError):
+            snap = {}
+        new = [z for z in self.zones if z.path not in snap]
+        if not new:
+            return snap
+        for z in new:
+            values = {c: z.get(c) for c in ("long_term", "short_term") if c in z.constraints}
+            # A PL2 below PL1 is not a firmware default (e.g. another TDP tool
+            # left it behind); never restore or boost to it.
+            if values.get("short_term", 0) < values["long_term"]:
+                values["short_term"] = values["long_term"]
+            snap[z.path] = values
+        write_atomic(FIRMWARE, json.dumps(snap))
+        log(f"firmware limits: {snap}")
+        return snap
+
+    def refresh_zones(self):
+        """Adopt package zones that appeared since start (late RAPL drivers)."""
+        found = package_zones()
+        if {z.path for z in found} == {z.path for z in self.zones}:
+            return
+        self.zones = found
+        self.firmware = self.snapshot_firmware()
+        log(f"zones now: {[z.path for z in self.zones]}")
+        if self.limit is not None:
+            self.apply()
+
+    def load_limit(self):
+        try:
+            return self.clamp(int(read(STATE)))
+        except (FileNotFoundError, ValueError):
+            return None
+
+    def clamp(self, watts):
+        return max(self.cfg["min"], min(self.cfg["max"], int(watts)))
+
+    def effective(self):
+        if self.limit is not None:
+            return self.limit
+        try:
+            return round(min(z.get("long_term") for z in self.zones) / 1_000_000)
+        except (OSError, ValueError):
+            return self.cfg["max"]
+
+    def targets(self, zone):
+        uw = self.limit * 1_000_000
+        want = {"long_term": uw}
+        if "short_term" in zone.constraints:
+            if self.limit < self.cfg["max"]:
+                want["short_term"] = uw
+            else:
+                firmware_pl2 = self.firmware.get(zone.path, {}).get("short_term", uw)
+                want["short_term"] = max(firmware_pl2, uw)
+        return want
+
+    def write(self, zone, constraint, uw):
+        """Write one limit; log a rejected write once rather than every tick."""
+        key = (zone.path, constraint)
+        try:
+            zone.set(constraint, uw)
+        except (OSError, ValueError) as e:
+            if key not in self.failed:
+                log(f"{zone.path} {constraint}: cannot write {uw}: {e}")
+                self.failed.add(key)
+            return False
+        self.failed.discard(key)
+        return True
+
+    def apply(self):
+        """Write the limit to every zone; return how many PL1 writes held."""
+        held = 0
+        for z in self.zones:
+            for constraint, uw in self.targets(z).items():
+                if self.write(z, constraint, uw) and constraint == "long_term":
+                    held += 1
+        return held
+
+    def set_limit(self, watts):
+        watts = self.clamp(watts)
+        if watts == self.limit:
+            # Steam re-sends the current value every few seconds; only make
+            # sure the zones still hold it, without logging or signalling.
+            self.apply()
+            return True
+        previous, self.limit = self.limit, watts
+        self.failed.clear()
+        if self.apply() == 0:
+            log(f"no zone accepted {watts} W; keeping {previous}")
+            self.limit = previous
+            if previous is not None:
+                self.apply()
+            return False
+        try:
+            write_atomic(STATE, str(self.limit))
+        except OSError as e:
+            log(f"cannot save limit: {e}")
+        log(f"TDP limit set to {self.limit} W")
+        self.emit_changed()
+        return True
+
+    def reconcile(self):
+        """Timer callback: re-apply after firmware resets. Must never raise."""
+        try:
+            self.refresh_zones()
+            if self.limit is not None:
+                drifted = any(
+                    (z.path, c) not in self.failed and z.get(c) != uw
+                    for z in self.zones for c, uw in self.targets(z).items()
+                )
+                if drifted:
+                    if not self.drift_logged:
+                        log("RAPL limits drifted (firmware reset); re-applying")
+                        self.drift_logged = True
+                    self.apply()
+                else:
+                    self.drift_logged = False
+            self.reconcile_error_logged = False
+        except Exception as e:  # noqa: BLE001 - an escaping error would kill the timer
+            if not self.reconcile_error_logged:
+                log(f"reconcile failed: {e}")
+                self.reconcile_error_logged = True
+        return GLib.SOURCE_CONTINUE
+
+    def restore_firmware(self):
+        for z in self.zones:
+            for constraint, uw in self.firmware.get(z.path, {}).items():
+                self.write(z, constraint, uw)
+
+    # D-Bus plumbing
+
+    def emit_changed(self):
+        if self.connection is None:
+            return
+        self.connection.emit_signal(
+            None, OBJECT_PATH, "org.freedesktop.DBus.Properties", "PropertiesChanged",
+            GLib.Variant("(sa{sv}as)", (IFACE, {"TdpLimit": GLib.Variant("u", self.effective())}, [])),
+        )
+
+    def get_property(self, connection, sender, path, iface, prop):
+        if prop == "TdpLimit":
+            return GLib.Variant("u", self.effective())
+        if prop == "TdpLimitMin":
+            return GLib.Variant("u", self.cfg["min"])
+        if prop == "TdpLimitMax":
+            return GLib.Variant("u", self.cfg["max"])
+        return None
+
+    def set_property(self, connection, sender, path, iface, prop, value):
+        if prop != "TdpLimit":
+            return False
+        return self.set_limit(value.unpack())
+
+    def on_bus_acquired(self, connection, name):
+        self.connection = connection
+        info = Gio.DBusNodeInfo.new_for_xml(INTROSPECTION).interfaces[0]
+        with warnings.catch_warnings():
+            # register_object's closure semantics are the ones verified here;
+            # its replacement takes differently shaped callbacks.
+            warnings.simplefilter("ignore", DeprecationWarning)
+            connection.register_object(OBJECT_PATH, info, None, self.get_property, self.set_property)
+        connection.signal_subscribe(
+            "org.freedesktop.login1", "org.freedesktop.login1.Manager", "PrepareForSleep",
+            "/org/freedesktop/login1", None, Gio.DBusSignalFlags.NONE, self.on_prepare_for_sleep,
+        )
+
+    def on_prepare_for_sleep(self, connection, sender, path, iface, signal_name, params):
+        (going_down,) = params.unpack()
+        if not going_down:
+            self.failed.clear()
+            self.reconcile()
+
+
+def main():
+    service = TdpService()
+    loop = GLib.MainLoop()
+
+    def stop(*_):
+        service.restore_firmware()
+        loop.quit()
+        return GLib.SOURCE_REMOVE
+
+    exit_code = 0
+
+    def lost(*_):
+        nonlocal exit_code
+        log(f"lost or could not own {BUS_NAME}")
+        service.restore_firmware()
+        exit_code = 1
+        loop.quit()
+
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        if GLibUnix is not None:
+            GLibUnix.signal_add(GLib.PRIORITY_DEFAULT, signum, stop)
+        else:
+            GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signum, stop)
+    GLib.timeout_add_seconds(RECONCILE_SECONDS, service.reconcile)
+    Gio.bus_own_name(
+        Gio.BusType.SYSTEM, BUS_NAME, Gio.BusNameOwnerFlags.NONE,
+        service.on_bus_acquired, None, lost,
+    )
+    log(f"zones: {[z.path for z in service.zones]}; range {service.cfg['min']}-{service.cfg['max']} W; "
+        f"limit {service.limit if service.limit is not None else 'firmware'}")
+    loop.run()
+    sys.exit(exit_code)
+
+
+if __name__ == "__main__":
+    main()

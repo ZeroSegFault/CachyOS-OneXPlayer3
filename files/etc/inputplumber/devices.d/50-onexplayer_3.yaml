@@ -1,0 +1,67 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/ShadowBlip/InputPlumber/main/rootfs/usr/share/inputplumber/schema/composite_device_v1.json
+# Managed by CachyOS-OneXPlayer3 (modules/30-controller.sh).
+#
+# OneXPlayer 3 built-in controller as one virtual Steam Deck controller.
+# Based on InputPlumber PR #672 (7116a1b, hardware-verified sources and
+# phys paths) with the Deck target and a local capability map. Same file name
+# as the upstream profile: /etc wins the tie, and the first matching config
+# claims the source devices.
+version: 1
+kind: CompositeDevice
+name: ONEXPLAYER 3
+single_source: false
+
+matches:
+  - dmi_data:
+      product_name: ONEXPLAYER 3
+      sys_vendor: ONE-NETBOOK
+
+source_devices:
+  # Sticks, face buttons, triggers, bumpers, d-pad (xpad, xinput mode).
+  - group: gamepad
+    evdev:
+      name: Microsoft X-Box 360 pad
+      phys_path: usb-0000:00:14.0-7/input0
+      handler: event*
+  # MCU keyboard: ONEX (Ctrl+Alt+Meta) and Keyboard (Ctrl+Meta+O) chords.
+  # Grabbing it also swallows the F16/F17 keystrokes the paddles emit.
+  - group: keyboard
+    evdev:
+      name: HID 1a86:fe00
+      phys_path: usb-0000:00:14.0-5/input0
+      handler: event*
+    events:
+      exclude:
+        - "*"
+      include:
+        - Keyboard:KeyLeftAlt
+        - Keyboard:KeyLeftCtrl
+        - Keyboard:KeyLeftMeta
+        - Keyboard:KeyO
+  # MCU vendor frames (0xB2): M1/M2 paddles and the Home button (0x24).
+  - group: gamepad
+    hidraw:
+      vendor_id: 0x1a86
+      product_id: 0xfe00
+      interface_num: 2
+  # BMI260 bound by modules/20-gyro.sh. PR #672's matrix for stock
+  # InputPlumber; the reference repo's x [0,-1,0] y [-1,0,0] z [0,0,-1] was
+  # posed against a patched build.
+  - group: imu
+    iio:
+      name: bmi260
+      mount_matrix:
+        x: [0, 1, 0]
+        y: [1, 0, 0]
+        z: [0, 0, 1]
+
+options:
+  auto_manage: true
+
+# Matches the steamos-manager device TOML so DeckService keeps this list.
+target_devices:
+  - deck-uhid
+  - keyboard
+  - mouse
+
+capability_map_id: oxp3_local

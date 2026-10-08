@@ -1,0 +1,19 @@
+[Unit]
+Description=OneXPlayer 3 TDP limit service for Steam (RAPL)
+After=dbus.service systemd-modules-load.service
+
+[Service]
+Type=dbus
+BusName=local.oxp3.Tdp
+ExecStart=/usr/lib/oxp3/oxp3-tdp
+Restart=on-failure
+RuntimeDirectory=oxp3-tdp
+RuntimeDirectoryPreserve=yes
+ProtectSystem=strict
+ReadWritePaths=/sys/class/powercap /sys/devices/virtual/powercap
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

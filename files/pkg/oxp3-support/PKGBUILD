@@ -1,0 +1,20 @@
+# Local package built by modules/40-steamos-manager.sh; not published.
+pkgname=oxp3-support
+pkgver=1
+pkgrel=1
+pkgdesc="OneXPlayer 3 steamos-manager device profile and RAPL TDP remote"
+arch=(any)
+license=(MIT)
+depends=(steamos-manager python python-gobject)
+options=(!debug !strip)
+source=(onexplayer-3.toml oxp3-tdp oxp3-tdp.service local.oxp3.Tdp.service source.sha256)
+sha256sums=(SKIP SKIP SKIP SKIP SKIP)
+
+package() {
+  install -Dm644 onexplayer-3.toml "$pkgdir/usr/share/steamos-manager/devices/onexplayer-3.toml"
+  install -Dm755 oxp3-tdp "$pkgdir/usr/lib/oxp3/oxp3-tdp"
+  install -Dm644 oxp3-tdp.service "$pkgdir/usr/lib/systemd/system/oxp3-tdp.service"
+  install -Dm644 local.oxp3.Tdp.service "$pkgdir/usr/share/dbus-1/system-services/local.oxp3.Tdp.service"
+  # Lets the installer tell whether the installed build matches the repo.
+  install -Dm644 source.sha256 "$pkgdir/usr/share/oxp3-support/source.sha256"
+}

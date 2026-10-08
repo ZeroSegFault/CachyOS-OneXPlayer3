@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Managed by CachyOS-OneXPlayer3 (modules/12-uki-boot.sh), which runs it, as
+# does /etc/pacman.d/hooks/95-oxp3-uki-presets.hook after a kernel install.
+#
+# Gives every installed kernel's mkinitcpio preset a UKI in /boot/EFI/Linux,
+# built from a kernel copy on the encrypted root: the stock /boot/vmlinuz-*
+# copy sits on the unencrypted ESP, where it could be swapped offline and
+# then signed into the next UKI. mkinitcpio's pacman hook keeps the copy
+# current (any preset kver path not owned by a package is a kernel copy).
+#
+# Prints the pkgbase of each preset it changed; with --build it also builds
+# their UKIs (signed by /etc/initcpio/post/sbctl once keys exist).
+set -euo pipefail
+
+build=0
+[[ ${1:-} == --build ]] && build=1
+
+changed=()
+for preset in /etc/mkinitcpio.d/*.preset; do
+  [[ -e $preset ]] || continue
+  base="$(basename "$preset" .preset)"
+  kver=''
+  for d in /usr/lib/modules/*/; do
+    [[ "$(cat "$d/pkgbase" 2>/dev/null)" == "$base" ]] && kver="$(basename "$d")"
+  done
+  [[ -n $kver && -f /usr/lib/modules/$kver/vmlinuz ]] || continue # removed kernel
+
+  copy="/var/lib/oxp3/vmlinuz-$base"
+  cmp -s "/usr/lib/modules/$kver/vmlinuz" "$copy" ||
+    install -Dm644 "/usr/lib/modules/$kver/vmlinuz" "$copy"
+
+  want="# Managed by CachyOS-OneXPlayer3 (/usr/local/lib/oxp3/uki-presets).
+# A UKI for systemd-boot, built from a kernel copy on the encrypted root.
+# The plain image stays for lsinitcpio checks.
+ALL_kver=\"$copy\"
+PRESETS=('default')
+default_image=\"/boot/initramfs-$base.img\"
+default_uki=\"/boot/EFI/Linux/$base.efi\""
+  if [[ "$(cat "$preset")" != "$want" ]]; then
+    printf '%s\n' "$want" > "$preset"
+    changed+=("$base")
+  fi
+  # The ESP copy is only for sdboot-manage's Type #1 entry, which stays the
+  # fallback until 12-uki-boot has switched over (its UKI-mode drop-in).
+  if [[ -e /etc/sdboot-manage.conf.d/90-oxp3-uki.conf ]]; then
+    rm -f -- "/boot/vmlinuz-$base"
+  else
+    cmp -s "/usr/lib/modules/$kver/vmlinuz" "/boot/vmlinuz-$base" ||
+      install -Dm644 "/usr/lib/modules/$kver/vmlinuz" "/boot/vmlinuz-$base"
+  fi
+done
+
+for base in "${changed[@]}"; do printf '%s\n' "$base"; done
+if (( build )); then
+  for base in "${changed[@]}"; do mkinitcpio -p "$base"; done
+fi

@@ -1,0 +1,23 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: oxp3 <oxp3@localhost>
+Date: Wed, 7 Oct 2026 21:37:29 +1100
+Subject: [PATCH 7/7] build: Fix the skipped driver tests when introspection is
+ disabled
+
+---
+ tests/meson.build | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/tests/meson.build b/tests/meson.build
+index 6832aa4..11b89c2 100644
+--- a/tests/meson.build
++++ b/tests/meson.build
+@@ -292,7 +292,7 @@ else
+         args: ['-c', 'exit 77']
+     )
+ 
+-    foreach driver_test: drivers_tests
++    foreach driver_test, _args: drivers_tests
+         test(driver_test,
+             sh,
+             args: ['-c', 'exit 77']

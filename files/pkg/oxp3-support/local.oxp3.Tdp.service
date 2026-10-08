@@ -1,0 +1,5 @@
+[D-BUS Service]
+Name=local.oxp3.Tdp
+Exec=/bin/false
+User=root
+SystemdService=oxp3-tdp.service

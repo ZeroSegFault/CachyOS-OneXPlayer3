@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Managed by CachyOS-OneXPlayer3 (modules/13-secure-boot.sh). Replaces
+# sbctl's /usr/lib/initcpio/post/sbctl: mkinitcpio runs one post hook per
+# name and /etc/initcpio/post comes first.
+#
+# mkinitcpio calls post hooks as: hook KERNEL IMAGE [UKI]. Sign only the UKI.
+# sbctl's hook signs the bare kernel when no UKI was built, and a signed
+# vmlinuz would boot under Secure Boot with any command line and initramfs.
+# A UKI that cannot be signed while Secure Boot is on fails the build loudly
+# instead of leaving an unbootable image behind silently.
+uki=${3:-}
+[[ -n $uki ]] || exit 0
+
+sb=/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c
+if [[ ! -d /var/lib/sbctl/keys ]]; then
+  if [[ "$(od -An -t u1 -j 4 -N 1 "$sb" 2>/dev/null | tr -d ' ')" == 1 ]]; then
+    echo "==> ERROR: no sbctl keys in /var/lib/sbctl: $uki is unsigned and will not boot with Secure Boot on" >&2
+    exit 1
+  fi
+  exit 0
+fi
+
+echo "Signing $uki"
+sbctl sign "$uki" || {
+  echo "==> ERROR: sbctl could not sign $uki; it will not boot with Secure Boot on" >&2
+  exit 1
+}

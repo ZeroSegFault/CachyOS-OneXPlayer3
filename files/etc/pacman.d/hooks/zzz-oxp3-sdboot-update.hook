@@ -1,0 +1,13 @@
+# Managed by CachyOS-OneXPlayer3 (modules/12-uki-boot.sh).
+# Copy a new systemd-boot to the ESP once sbctl's zz-sbctl.hook has signed it.
+# bootctl prefers systemd-bootx64.efi.signed; sdboot-manage's own update hook
+# would run before the signing and leave the ESP one release behind.
+[Trigger]
+Type = Package
+Operation = Upgrade
+Target = systemd
+
+[Action]
+Description = Updating systemd-boot on the ESP...
+When = PostTransaction
+Exec = /usr/bin/bootctl --graceful update

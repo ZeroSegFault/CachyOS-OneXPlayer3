@@ -1,0 +1,21 @@
+#%PAM-1.0
+# Written by CachyOS-OneXPlayer3 modules/85-fingerprint.sh. Overrides
+# kscreenlocker's /usr/lib/pam.d/kde-fingerprint (6.7.5), which only runs
+# pam_faillock preauth. Here a fingerprint prompt that ends in no match
+# (3 wrong touches, PAM_MAXTRIES) is recorded by pam_faillock like a wrong
+# password. A timeout, a missing reader or no enrolled prints
+# (PAM_AUTHINFO_UNAVAIL) ends the stack without a record, so they can never
+# lock the password out.
+auth       required                    pam_shells.so
+auth       requisite                   pam_nologin.so
+auth       requisite                   pam_faillock.so      preauth
+auth       [success=1 maxtries=bad default=die] pam_fprintd.so max-tries=3 timeout=30
+auth       [default=die]               pam_faillock.so      authfail
+auth       optional                    pam_permit.so
+auth       required                    pam_env.so
+
+account    include                     system-local-login
+
+password   required                    pam_deny.so
+
+session    include                     system-local-login

@@ -1,0 +1,76 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: oxp3 <oxp3@localhost>
+Date: Wed, 7 Oct 2026 21:32:29 +1100
+Subject: [PATCH 2/7] sigfm: Count only distinct correspondences as RANSAC
+ inliers
+
+---
+ libfprint/sigfm/sigfm-ransac.cpp | 38 +++++++++++++++++++++++++++++---
+ 1 file changed, 35 insertions(+), 3 deletions(-)
+
+diff --git a/libfprint/sigfm/sigfm-ransac.cpp b/libfprint/sigfm/sigfm-ransac.cpp
+index 55c10ad..92c5a88 100644
+--- a/libfprint/sigfm/sigfm-ransac.cpp
++++ b/libfprint/sigfm/sigfm-ransac.cpp
+@@ -22,6 +22,7 @@
+ #include "opencv2/calib3d.hpp"
+ #include "opencv2/features2d.hpp"
+ #include "opencv2/imgproc.hpp"
++#include <algorithm>
+ #include <cmath>
+ #include <vector>
+ 
+@@ -34,6 +35,16 @@ constexpr double ransac_reproj_px = 2.0;
+ // two captures of one finger has a scale close to 1.
+ constexpr double ransac_min_scale = 0.8;
+ constexpr double ransac_max_scale = 1.25;
++// Keypoints closer than this (in pixels of the native image) count as one
++// location when pairing correspondences.
++constexpr double ransac_min_separation_px = 1.0;
++
++bool near_any(const std::vector<cv::Point2f>& pts, const cv::Point2f& p, double dist)
++{
++    return std::any_of(pts.begin(), pts.end(), [&](const cv::Point2f& q) {
++        return std::hypot(p.x - q.x, p.y - q.y) < dist;
++    });
++}
+ } // namespace
+ 
+ SigfmImgInfo* sigfm_extract_scaled(const SigfmPix* pix, int width, int height, double scale)
+@@ -62,12 +73,33 @@ int sigfm_ransac_inliers(SigfmImgInfo* frame, SigfmImgInfo* enrolled, double sca
+         std::vector<std::vector<cv::DMatch>> knn;
+         cv::BFMatcher(cv::NORM_L2).knnMatch(frame->descriptors, enrolled->descriptors, knn, 2);
+ 
+-        std::vector<cv::Point2f> frame_pts, enrolled_pts;
++        std::vector<cv::DMatch> good;
+         for (const auto& m : knn) {
+             if (m.size() == 2 && m[0].distance < ransac_ratio * m[1].distance) {
+-                frame_pts.push_back(frame->keypoints.at(m[0].queryIdx).pt);
+-                enrolled_pts.push_back(enrolled->keypoints.at(m[0].trainIdx).pt);
++                good.push_back(m[0]);
++            }
++        }
++
++        // Inliers must be distinct physical correspondences. SIFT emits
++        // several keypoints at one location when it finds several dominant
++        // orientations, and nothing stops many probe keypoints from matching
++        // one enrolled keypoint; each of those would otherwise count as an
++        // extra inlier. Pair locations one-to-one, best descriptor first.
++        std::stable_sort(good.begin(), good.end(),
++                         [](const cv::DMatch& a, const cv::DMatch& b) {
++                             return a.distance < b.distance;
++                         });
++        const double min_sep = ransac_min_separation_px * scale;
++        std::vector<cv::Point2f> frame_pts, enrolled_pts;
++        for (const auto& m : good) {
++            const cv::Point2f fp = frame->keypoints.at(m.queryIdx).pt;
++            const cv::Point2f ep = enrolled->keypoints.at(m.trainIdx).pt;
++            if (near_any(frame_pts, fp, min_sep) ||
++                near_any(enrolled_pts, ep, min_sep)) {
++                continue;
+             }
++            frame_pts.push_back(fp);
++            enrolled_pts.push_back(ep);
+         }
+         if (frame_pts.size() < 4)
+             return 0;

@@ -1,0 +1,26 @@
+# OneXPlayer 3 device profile for steamos-manager (oxp3-support package).
+# steamos-manager reads device profiles only from this directory.
+[[device]]
+dmi.sys_vendor = "ONE-NETBOOK"
+dmi.product_name = "ONEXPLAYER 3"
+device = "onexplayer_3"
+variant = "ONEXPLAYER 3"
+friendly_name = "ONEXPLAYER 3"
+
+# Manual GPU clock slider through the xe frequency controls.
+[gpu_performance]
+driver = "intel"
+
+# TDP slider relayed to oxp3-tdp (local.oxp3.Tdp), registered in
+# /etc/steamos-manager/remotes.d/oxp3-tdp.toml.
+[tdp_limit]
+method = "remote_interface"
+
+# Same target list as /etc/inputplumber/devices.d/50-onexplayer_3.yaml.
+[inputplumber]
+target_devices = ["deck-uhid", "keyboard", "mouse"]
+
+# Steam's battery charge limit: BAT0 charge_control_end_threshold from oxpec
+# (modules/35-oxpec.sh). Without oxpec the interface simply stays absent.
+[battery_charge_limit]
+method = "acpi_sb"

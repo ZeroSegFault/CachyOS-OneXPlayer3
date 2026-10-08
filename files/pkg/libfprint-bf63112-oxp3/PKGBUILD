@@ -1,0 +1,88 @@
+# Local build for the OneXPlayer 3 postinstall (CachyOS-OneXPlayer3).
+# libfprint 1.94.100 + the BF63112 SPI driver, side-installed for fprintd only:
+# the distro libfprint stays in place and nothing else loads this copy.
+pkgname=libfprint-bf63112-oxp3
+_commit=6a19d67d2a072dac4b6a467434966c55af76b602
+pkgver=1.94.100.r8.g6a19d67
+pkgrel=1
+pkgdesc="libfprint with the Betterlife BF63112 driver for the ONEXPLAYER 3 (fprintd side-install)"
+arch=(x86_64)
+url="https://github.com/pythontyphon/libfprint-bf63112-oxp3"
+license=(LGPL-2.1-or-later)
+options=(!debug)
+depends=(
+  fprintd
+  glib2
+  glibc
+  libgcc
+  libgudev
+  libgusb
+  libstdc++
+  opencv
+)
+makedepends=(
+  git
+  glib2-devel
+  meson
+  patchelf
+)
+source=(
+  "libfprint::git+https://github.com/pythontyphon/libfprint-bf63112-oxp3.git#commit=$_commit"
+  0001-sigfm-Validate-stored-templates-before-deserializing.patch
+  0002-sigfm-Count-only-distinct-correspondences-as-RANSAC-.patch
+  0003-bf63112-Allow-only-stricter-thresholds-from-the-envi.patch
+  0004-bf63112-Retry-instead-of-failing-on-sensor-timeouts-.patch
+  0005-image-device-Skip-enrolled-prints-a-custom-matcher-c.patch
+  0006-tests-Cover-corrupt-BF63112-templates-and-threshold-.patch
+  0007-build-Fix-the-skipped-driver-tests-when-introspectio.patch
+)
+b2sums=('dc2254dbaf3c55c8f210b97e7d56511539dbbb78cd8a6be8ad46cd6505cbef3cda43af111df36a404baa352252f07b97773211461254223e66b354ff1b2065d4'
+        '80521eadb8589f146d3bea4b2918e2695978da5160f5c5f835e804ce0791a1da2ea21919774a77dbf14a089b63e914c6332edb19dcb07bd7f87a1acc5a0162a6'
+        '8d637aad07137991f32ad51059e6588e2115dc303eadb0ba3504689cf39293e2d29a256e72c81246fab025aed10aa3b8e706f4457f82a30e8eb0df6d68144a86'
+        '47405a0f8d87aff015ec3fc5591abee35f65cc09983cce31d4c106e2fff63938200d91db7e5b76d6a2f981e59f4a878d1e5684c4d7fa97cf44fc36e3599d1446'
+        '87164cb8b9c610176a866d7249185fe792899bd43c9bab922e66f7c690981d426a9a992a82772db003fd7f308f9b73e7aa0952299336e72cc49fb0acafd39e11'
+        'c01518ca2551b8112e3e66db2634a8f76fa96aeddbe483a2befed4894e5cc3ccc880dc759643ad4cf78bb9da28d4419d0392f4cd572c2a458225fc2472650812'
+        '09db24664c2975d55b80e637e3515425f5c0da4e46149aa59d0e64322f724b7a6499dcf772f6d6b3b6fe205dadb84e255c6426b13df811de02ba30b762a7ab3d'
+        'dc79e68006f3304597743dbea917ffbed2e42663cbbbfb38986f7293d40fe99f0aa4aef20a8cd89ff3b6961dcac5ef24090d7f6eba6c9aa9a861f90f80cbd8cf')
+
+_libdir=/usr/lib/libfprint-bf63112
+
+prepare() {
+  cd libfprint
+  # The branch is mutable; build exactly the reviewed commit.
+  [[ $(git rev-parse HEAD) == "$_commit" ]] || { error "libfprint is not at $_commit"; return 1; }
+  local p
+  for p in "${source[@]:1}"; do
+    patch -Np1 -i "$srcdir/$p"
+  done
+}
+
+build() {
+  # Only the BF63112 driver: fprintd on this machine has no other reader.
+  # No introspection, docs, udev rules or hwdb: only the library is installed.
+  arch-meson libfprint build \
+    -D drivers=bf63112 \
+    -D introspection=false \
+    -D doc=false \
+    -D udev_rules=disabled \
+    -D udev_hwdb=disabled \
+    -D gtk-examples=false \
+    -D installed-tests=false
+  meson compile -C build
+}
+
+check() {
+  meson test -C build --print-errorlogs bf63112-sigfm
+}
+
+package() {
+  install -Dm755 build/libfprint/libfprint-2.so.2.0.0 "$pkgdir$_libdir/libfprint-2.so.2"
+  # Image capture (fprintd stopped) and offline matcher replay, for validating
+  # the matcher on this machine. img-capture must load the library above.
+  install -Dm755 build/examples/img-capture "$pkgdir$_libdir/bin/img-capture"
+  install -Dm755 build/examples/bf63112-replay "$pkgdir$_libdir/bin/bf63112-replay"
+  patchelf --set-rpath "$_libdir" "$pkgdir$_libdir/bin/img-capture"
+  patchelf --remove-rpath "$pkgdir$_libdir/bin/bf63112-replay"
+  printf '%s\n' "$_commit" > "$pkgdir$_libdir/COMMIT"
+  install -Dm644 libfprint/COPYING -t "$pkgdir/usr/share/licenses/$pkgname"
+}

@@ -1,0 +1,23 @@
+# OneXPlayer 3 fingerprint reader: Betterlife BF63112 (chip 0x6683) on LPSS
+# SPI1 CS0, used by libfprint-bf63112-oxp3 through spidev.
+# Written by CachyOS-OneXPlayer3 modules/85-fingerprint.sh.
+
+# Bind spidev. Its ACPI match table lists only SPT0001-3, so use
+# driver_override, as libfprint's own rules do for elanspi.
+ACTION=="add|change", SUBSYSTEM=="spi", ENV{MODALIAS}=="acpi:BF63112:*", TEST!="driver", \
+  ATTR{[dmi/id]sys_vendor}=="ONE-NETBOOK", ATTR{[dmi/id]product_name}=="ONEXPLAYER 3", \
+  RUN{builtin}+="kmod load spi:spidev", \
+  RUN+="/bin/sh -c 'echo spidev > %S%p/driver_override && echo %k > %S%p/subsystem/drivers/spidev/bind'"
+
+# Firmware holds the sensor in reset through GPP_F_16 (\_SB.GPI1 pin 16, the
+# GpioIo in FPRT._CRS, active-high). The driver releases it while fprintd has
+# the device open. Set on every action except remove: binding spidev causes a
+# "bind" event, which would drop a property set only on "add".
+ACTION!="remove", SUBSYSTEM=="spi", ENV{MODALIAS}=="acpi:BF63112:*", \
+  ATTR{[dmi/id]sys_vendor}=="ONE-NETBOOK", ATTR{[dmi/id]product_name}=="ONEXPLAYER 3", \
+  ENV{LIBFPRINT_BF63112_RESET_GPIO}="INTC10BC:01 16 active-high"
+
+# A stable name for that one GPIO controller, so fprintd's DeviceAllow can
+# grant it and no other.
+ACTION!="remove", SUBSYSTEM=="gpio", KERNEL=="gpiochip*", KERNELS=="INTC10BC:01", \
+  ATTR{[dmi/id]product_name}=="ONEXPLAYER 3", SYMLINK+="oxp3-fingerprint-gpiochip"

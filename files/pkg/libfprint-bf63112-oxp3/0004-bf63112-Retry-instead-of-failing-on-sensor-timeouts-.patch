@@ -1,0 +1,99 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: oxp3 <oxp3@localhost>
+Date: Wed, 7 Oct 2026 21:33:51 +1100
+Subject: [PATCH 4/7] bf63112: Retry instead of failing on sensor timeouts,
+ re-release reset and honour cancels on activation
+
+---
+ libfprint/drivers/bf63112.c | 50 +++++++++++++++++++++++++------------
+ 1 file changed, 34 insertions(+), 16 deletions(-)
+
+diff --git a/libfprint/drivers/bf63112.c b/libfprint/drivers/bf63112.c
+index 1f85d09..605bd64 100644
+--- a/libfprint/drivers/bf63112.c
++++ b/libfprint/drivers/bf63112.c
+@@ -686,8 +686,19 @@ bf63112_init_run_state (FpiSsm *ssm, FpDevice *device)
+   switch (fpi_ssm_get_cur_state (ssm))
+     {
+     case BF63112_INIT_RESET_SETTLE:
+-      /* The reset line was released when the device was opened. */
+-      fpi_ssm_next_state_delayed (ssm, BF63112_RESET_SETTLE_MS);
++      {
++        GError *error = NULL;
++
++        /* The reset line was released when the device was opened, but the
++         * device can stay open across suspend, where firmware may assert it
++         * again. Release it again on every activation (a no-op otherwise). */
++        if (!bf63112_reset_set (self, FALSE, &error))
++          {
++            fpi_ssm_mark_failed (ssm, error);
++            break;
++          }
++        fpi_ssm_next_state_delayed (ssm, BF63112_RESET_SETTLE_MS);
++      }
+       break;
+ 
+     case BF63112_INIT_READ_ID_HIGH:
+@@ -851,6 +862,14 @@ bf63112_init_complete (FpiSsm   *ssm,
+ 
+   g_assert (self->ssm == ssm);
+   self->ssm = NULL;
++
++  /* The final idle write is not cancellable, so a cancellation that arrived
++   * while it ran would otherwise be lost: the image device ignores cancels
++   * before activation completes, and the scan would then swallow it. */
++  if (!error && fpi_device_action_is_cancelled (device))
++    error = g_error_new_literal (G_IO_ERROR, G_IO_ERROR_CANCELLED,
++                                 "Activation cancelled");
++
+   fpi_image_device_activate_complete (FP_IMAGE_DEVICE (device), error);
+ }
+ 
+@@ -890,13 +909,6 @@ enum bf63112_scan_state {
+   BF63112_SCAN_NUM_STATES,
+ };
+ 
+-static GError *
+-bf63112_timeout_error (const gchar *operation, guint timeout_ms)
+-{
+-  return g_error_new (G_IO_ERROR, G_IO_ERROR_TIMED_OUT,
+-                      "%s timed out after %u ms", operation, timeout_ms);
+-}
+-
+ static void
+ bf63112_finger_status_cb (FpiSpiTransfer *transfer,
+                           FpDevice       *device,
+@@ -953,9 +965,13 @@ bf63112_capture_status_cb (FpiSpiTransfer *transfer,
+ 
+   if (g_get_monotonic_time () >= self->poll_deadline)
+     {
+-      fpi_ssm_mark_failed (ssm,
+-                           bf63112_timeout_error ("Capture-ready polling",
+-                                                  BF63112_CAPTURE_TIMEOUT_MS));
++      /* Usually the finger moved while the capture started: ask for another
++       * touch instead of failing the whole enrollment or verification. */
++      fp_info ("Capture-ready polling timed out after %u ms, asking for a retry",
++               BF63112_CAPTURE_TIMEOUT_MS);
++      fpi_image_device_retry_scan (FP_IMAGE_DEVICE (self),
++                                   FP_DEVICE_RETRY_REMOVE_FINGER);
++      fpi_ssm_jump_to_state (ssm, BF63112_SCAN_OFF_READ_MODE);
+       return;
+     }
+ 
+@@ -994,10 +1010,12 @@ bf63112_finger_off_status_cb (FpiSpiTransfer *transfer,
+ 
+   if (g_get_monotonic_time () >= self->poll_deadline)
+     {
+-      fpi_ssm_mark_failed (ssm,
+-                           bf63112_timeout_error ("Finger removal",
+-                                                  BF63112_FINGER_TIMEOUT_MS));
+-      return;
++      /* The image was already submitted, so failing here would turn a good
++       * scan into an error. Keep waiting; the caller cancels on its own
++       * timeout, as while waiting for the finger. */
++      fp_info ("Finger still on the sensor after %u ms, still waiting",
++               BF63112_FINGER_TIMEOUT_MS);
++      self->poll_deadline = G_MAXINT64;
+     }
+ 
+   fpi_ssm_jump_to_state_delayed (ssm, BF63112_SCAN_OFF_POLL,

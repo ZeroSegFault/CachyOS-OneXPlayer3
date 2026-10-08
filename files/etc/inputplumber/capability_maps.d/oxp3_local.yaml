@@ -1,0 +1,42 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/ShadowBlip/InputPlumber/main/rootfs/usr/share/inputplumber/schema/capability_map_v1.json
+# Managed by CachyOS-OneXPlayer3 (modules/30-controller.sh).
+#
+# Steam Deck layout for the OneXPlayer 3's extra buttons. Button identities
+# are from InputPlumber PR #672's evtest notes on OXP3 hardware:
+#   ONEX:     LeftCtrl+LeftAlt+LeftMeta on HID 1a86:fe00
+#   Keyboard: LeftCtrl+LeftMeta+O on HID 1a86:fe00
+#   Home:     vendor button 0x24 on hidraw interface 2, which InputPlumber's
+#             oxp_hid driver reports as gamepad Keyboard
+# Mapped outputs go straight to the targets and are not re-mapped, so the
+# Keyboard key's output is not turned into Guide by the Home entry.
+version: 1
+kind: CapabilityMap
+name: OneXPlayer 3 (Steam Deck layout)
+id: oxp3_local
+
+mapping:
+  - name: Home -> Steam button
+    source_events:
+      - gamepad:
+          button: Keyboard
+    target_event:
+      gamepad:
+        button: Guide
+  - name: ONEX -> Quick Access Menu
+    source_events:
+      - keyboard: KeyLeftCtrl
+      - keyboard: KeyLeftAlt
+      - keyboard: KeyLeftMeta
+    target_event:
+      gamepad:
+        button: QuickAccess
+  - name: Keyboard key -> on-screen keyboard
+    source_events:
+      - keyboard: KeyLeftCtrl
+      - keyboard: KeyLeftMeta
+      - keyboard: KeyO
+    target_event:
+      gamepad:
+        button: Keyboard
+
+filtered_events: []

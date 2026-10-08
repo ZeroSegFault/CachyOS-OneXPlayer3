@@ -1,0 +1,57 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: oxp3 <oxp3@localhost>
+Date: Wed, 7 Oct 2026 21:32:39 +1100
+Subject: [PATCH 3/7] bf63112: Allow only stricter thresholds from the
+ environment, build image dumps only on request
+
+---
+ libfprint/drivers/bf63112-sigfm.c | 7 +++++++
+ libfprint/drivers/bf63112.c       | 7 ++++++-
+ 2 files changed, 13 insertions(+), 1 deletion(-)
+
+diff --git a/libfprint/drivers/bf63112-sigfm.c b/libfprint/drivers/bf63112-sigfm.c
+index a029edf..f3ca2da 100644
+--- a/libfprint/drivers/bf63112-sigfm.c
++++ b/libfprint/drivers/bf63112-sigfm.c
+@@ -66,6 +66,13 @@ bf63112_threshold_from_env (const gchar *name, gint fallback)
+       return fallback;
+     }
+ 
++  /* The environment may only make matching stricter. */
++  if (value < fallback)
++    {
++      g_warning ("Ignoring %s=%s: below the default of %d", name, env, fallback);
++      return fallback;
++    }
++
+   return value;
+ }
+ 
+diff --git a/libfprint/drivers/bf63112.c b/libfprint/drivers/bf63112.c
+index c46d061..1f85d09 100644
+--- a/libfprint/drivers/bf63112.c
++++ b/libfprint/drivers/bf63112.c
+@@ -391,10 +391,14 @@ bf63112_reset_gpio_release (FpiDeviceBf63112 *self)
+ /* Debugging aid for matcher development: with LIBFPRINT_BF63112_DUMP_DIR set
+  * (under fprintd it must be inside /var/lib/fprint), every captured image is
+  * written there as a PGM file. These are fingerprint images; never enable
+- * this outside of development. */
++ * this outside of development. Only built with -DBF63112_ENABLE_IMAGE_DUMP;
++ * examples/img-capture covers collecting images for the replay tool. */
+ static void
+ bf63112_dump_image (FpImage *image)
+ {
++#ifndef BF63112_ENABLE_IMAGE_DUMP
++  (void) image;
++#else
+   static guint counter;
+   const gchar *dir = g_getenv ("LIBFPRINT_BF63112_DUMP_DIR");
+   g_autofree gchar *name = NULL;
+@@ -419,6 +423,7 @@ bf63112_dump_image (FpImage *image)
+     fp_warn ("Cannot dump image to %s: %s", path, error ? error->message : g_strerror (errno));
+   else
+     fp_dbg ("Dumped capture to %s", path);
++#endif
+ }
+ 
+ static FpImage *
