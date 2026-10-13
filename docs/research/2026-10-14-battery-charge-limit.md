@@ -85,3 +85,20 @@ recovery, and read-only metadata.
 On the device, the previously failing session-bus test passes. After reboot,
 the startup trace captured Steam's two `-1` requests; the hardware target
 remained 100%, battery power stayed around 36.8 W, and stored energy rose.
+
+Final verification also passed with the temporary trace service and Steam
+launcher drop-in removed. Across four samples after the clean reboot, the
+target stayed at 100%, stored energy rose from 39.257 to 39.572 Wh, and the
+displayed battery level rose from 43% to 44%. Steam was running, the remote
+was active, and the public API reported the default (`-1`). Automatic TPM2
+unlock succeeded; no boot-chain modifications were needed.
+
+A separate physical check set a 30% target while the battery was above 40%:
+charging stopped, restarting the remote preserved 30%, and disabling the
+limit resumed about 36.8 W. An unchanged module-40 installer run reported
+`nothing changed; system already matches`. All eight isolated D-Bus tests,
+changed-shell ShellCheck checks, package syntax checks, and whitespace checks
+passed. Separate standards and requirements reviews found no actionable
+issues. Startup with a missing sysfs control and permission-denied writes
+were not directly exercised; the tests cover disappearance after startup
+and subsequent recovery.
