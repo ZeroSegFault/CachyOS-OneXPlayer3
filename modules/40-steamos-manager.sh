@@ -8,6 +8,8 @@
 #     only reads from /usr/share/steamos-manager/devices;
 #   - oxp3-tdp, a system-bus TdpLimit1 remote that writes both RAPL package
 #     zones (MSR and MMIO; the lower PL1 wins on this firmware).
+#   - oxp3-charge-limit, a BatteryChargeLimit1 remote translating Steam's
+#     disabled limit to 100% (the native backend writes a charging-stopping 0%).
 # Decision and evidence: docs/research/2026-10-07-input-power-architecture.md.
 # shellcheck source=../lib/common.sh
 source "$(dirname "$0")/../lib/common.sh"
@@ -21,7 +23,8 @@ remove_file /var/lib/oxp3-tdp/limit || true
 
 # 1. oxp3-support: rebuilt only when its sources differ from the installed build.
 src="$REPO_ROOT/files/pkg/oxp3-support"
-sources=(onexplayer-3.toml oxp3-tdp oxp3-tdp.service local.oxp3.Tdp.service PKGBUILD)
+sources=(onexplayer-3.toml oxp3-tdp oxp3-tdp.service local.oxp3.Tdp.service
+         oxp3-charge-limit oxp3-charge-limit.service local.oxp3.ChargeLimit.service PKGBUILD)
 want="$(cd "$src" && cat "${sources[@]}" | sha256sum | cut -d' ' -f1)"
 have="$(cat /usr/share/oxp3-support/source.sha256 2>/dev/null || true)"
 pkg_changed=0
@@ -64,6 +67,23 @@ write_file /etc/dbus-1/system.d/local.oxp3.Tdp.conf <<EOF && policy_changed=0
   </policy>
 </busconfig>
 EOF
+# Restrict battery writes to the same handheld user and root as the TDP API.
+write_file /etc/dbus-1/system.d/local.oxp3.ChargeLimit.conf <<EOF && policy_changed=0
+<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-BUS Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <policy context="default">
+    <deny send_destination="local.oxp3.ChargeLimit"/>
+  </policy>
+  <policy user="root">
+    <allow own="local.oxp3.ChargeLimit"/>
+    <allow send_destination="local.oxp3.ChargeLimit"/>
+  </policy>
+  <policy user="$user">
+    <allow send_destination="local.oxp3.ChargeLimit"/>
+  </policy>
+</busconfig>
+EOF
 # dbus-broker does not watch policy files; ask it to re-read them.
 (( policy_changed == 0 )) && as_root busctl call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus ReloadConfig
 
@@ -73,6 +93,12 @@ write_file /etc/steamos-manager/remotes.d/oxp3-tdp.toml <<'EOF' && remote_change
 [TdpLimit1]
 bus_name = "local.oxp3.Tdp"
 object_path = "/local/oxp3/Tdp"
+EOF
+write_file /etc/steamos-manager/remotes.d/oxp3-charge-limit.toml <<'EOF' && remote_changed=0
+# Steam's disabled charge limit means 100%, not the generic backend's 0%.
+[BatteryChargeLimit1]
+bus_name = "local.oxp3.ChargeLimit"
+object_path = "/local/oxp3/ChargeLimit"
 EOF
 
 # Range of the slider. Left alone once it exists so local edits survive.
@@ -90,14 +116,17 @@ EOF
 fi
 
 # 3. Services.
-enable_unit steamos-manager.service oxp3-tdp.service
+enable_unit steamos-manager.service oxp3-tdp.service oxp3-charge-limit.service
 if (( pkg_changed )) && systemctl is-active --quiet oxp3-tdp.service; then
   as_root systemctl restart oxp3-tdp.service
+fi
+if (( pkg_changed )) && systemctl is-active --quiet oxp3-charge-limit.service; then
+  as_root systemctl restart oxp3-charge-limit.service
 fi
 if (( pkg_changed || remote_changed == 0 )); then
   # steamos-manager reads the device profile and remotes.d at startup only;
   # restarting it under a running Game Mode is not safe.
-  need_reboot "steamos-manager loads the OXP3 profile and TDP remote at next login"
+  need_reboot "steamos-manager loads the OXP3 profile and power-control remotes at next login"
 fi
 
 if busctl --system introspect local.oxp3.Tdp /local/oxp3/Tdp 2>/dev/null | grep -q TdpLimit; then

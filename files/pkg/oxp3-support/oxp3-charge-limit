@@ -1,0 +1,133 @@
+#!/usr/bin/python3
+"""SteamOS Manager battery remote: default means 100%, never 0% on OXP3.
+
+Steam sends MaxChargeLevel=-1 at login when its charge limit is disabled.
+The generic acpi_sb backend writes 0, which stops charging on this firmware.
+This remote translates that API value at the boundary; Steam still owns the
+user's preference. No polling, saved duplicate preference, or bypass writes.
+"""
+
+import signal
+import sys
+import warnings
+from pathlib import Path
+
+import gi
+from gi.repository import Gio, GLib
+
+try:
+    gi.require_version("GLibUnix", "2.0")
+    from gi.repository import GLibUnix
+except (ImportError, ValueError):
+    GLibUnix = None
+
+BUS_NAME = "local.oxp3.ChargeLimit"
+OBJECT_PATH = "/local/oxp3/ChargeLimit"
+IFACE = "com.steampowered.SteamOSManager1.BatteryChargeLimit1"
+THRESHOLD = "/sys/class/power_supply/BAT0/charge_control_end_threshold"
+INTROSPECTION = f"""
+<node>
+  <interface name="{IFACE}">
+    <property name="MaxChargeLevel" type="i" access="readwrite"/>
+    <property name="SuggestedMinimumLimit" type="i" access="read">
+      <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="const"/>
+    </property>
+  </interface>
+</node>
+"""
+
+
+class ChargeLimit:
+    def __init__(self, threshold):
+        self.threshold = Path(threshold)
+        self.connection = None
+        # Repair a zero left by the old backend, but preserve positive limits.
+        if self.read_target() == 0:
+            self.set_limit(-1)
+
+    def read_target(self):
+        value = int(self.threshold.read_text().strip())
+        if not 0 <= value <= 100:
+            raise ValueError(f"invalid battery threshold: {value}")
+        return value
+
+    def get_limit(self):
+        value = self.read_target()
+        return -1 if value in (0, 100) else value
+
+    def set_limit(self, limit):
+        if limit != -1 and not 1 <= limit <= 100:
+            raise ValueError("charge limit must be -1 or 1–100")
+        target = 100 if limit == -1 else limit
+        if self.read_target() == target:
+            return
+        self.threshold.write_text(f"{target}\n")
+        if self.read_target() != target:
+            raise OSError("battery rejected the charge limit")
+        if self.connection is not None:
+            self.connection.emit_signal(
+                None, OBJECT_PATH, "org.freedesktop.DBus.Properties", "PropertiesChanged",
+                GLib.Variant("(sa{sv}as)", (
+                    IFACE, {"MaxChargeLevel": GLib.Variant("i", self.get_limit())}, [],
+                )),
+            )
+
+    def get_property(self, connection, sender, path, iface, prop):
+        try:
+            if prop == "MaxChargeLevel":
+                return GLib.Variant("i", self.get_limit())
+            if prop == "SuggestedMinimumLimit":
+                return GLib.Variant("i", 10)
+        except (OSError, ValueError) as error:
+            print(f"cannot read charge limit: {error}", file=sys.stderr, flush=True)
+        return None
+
+    def set_property(self, connection, sender, path, iface, prop, value):
+        if prop != "MaxChargeLevel":
+            return False
+        try:
+            self.set_limit(value.unpack())
+            return True
+        except (OSError, ValueError) as error:
+            print(f"cannot set charge limit: {error}", file=sys.stderr, flush=True)
+            return False
+
+    def on_bus_acquired(self, connection, name):
+        self.connection = connection
+        info = Gio.DBusNodeInfo.new_for_xml(INTROSPECTION).interfaces[0]
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            connection.register_object(OBJECT_PATH, info, None, self.get_property, self.set_property)
+
+
+def main(threshold=THRESHOLD):
+    service = ChargeLimit(threshold)
+    loop = GLib.MainLoop()
+    exit_code = 0
+
+    def stop():
+        loop.quit()
+        return GLib.SOURCE_REMOVE
+
+    def lost(connection, name):
+        nonlocal exit_code
+        print(f"lost or could not own {name}", file=sys.stderr, flush=True)
+        exit_code = 1
+        loop.quit()
+
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        if GLibUnix is not None:
+            GLibUnix.signal_add(GLib.PRIORITY_DEFAULT, signum, stop)
+        else:
+            GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signum, stop)
+    Gio.bus_own_name(
+        Gio.BusType.SYSTEM, BUS_NAME, Gio.BusNameOwnerFlags.NONE,
+        service.on_bus_acquired, None, lost,
+    )
+    loop.run()
+    # Keep the controller's target when stopped; Steam owns that preference.
+    return exit_code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -20,7 +20,6 @@ method = "remote_interface"
 [inputplumber]
 target_devices = ["deck-uhid", "keyboard", "mouse"]
 
-# Steam's battery charge limit: BAT0 charge_control_end_threshold from oxpec
-# (modules/35-oxpec.sh). Without oxpec the interface simply stays absent.
-[battery_charge_limit]
-method = "acpi_sb"
+# BatteryChargeLimit1 is provided by oxp3-charge-limit via remotes.d.
+# Do not enable the native acpi_sb backend: it translates Steam's -1
+# (default/no limit) to 0%, which stops charging on this controller.

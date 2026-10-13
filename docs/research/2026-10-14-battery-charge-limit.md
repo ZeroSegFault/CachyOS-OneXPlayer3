@@ -60,3 +60,28 @@ FAIL: request -1 -> hardware target 0%, expected 100%
 
 The test restores the previous positive target, or 100% if it started at the
 broken zero value. It does not suspend or reboot the device.
+
+## Implementation
+
+`oxp3-support` now installs `oxp3-charge-limit`, a system-bus
+`BatteryChargeLimit1` remote. Module 40 installs its access policy and remote
+registration; the OneXPlayer 3 profile no longer selects the native battery
+backend. This uses the same upstream extension mechanism as the TDP remote.
+Updates to SteamOS Manager and replacement of the oxpec DKMS backport with
+an in-tree driver do not replace this locally packaged adapter.
+
+The remote maps `-1` to 100%, reports 100% as the default (`-1`), accepts
+positive 1–100% targets, and rejects other values. On service start it repairs
+a legacy zero but preserves positive targets. Repeated requests do not write
+unchanged hardware. Missing/unwritable controls fail rather than reporting
+success. Stopping the service leaves the hardware target alone.
+
+Run `/usr/bin/python3 tests/test_charge_limit.py` for isolated D-Bus tests
+using temporary files instead of sysfs (requires python-gobject and
+dbus-run-session). These cover disabled/positive limits, invalid requests,
+idempotent writes, restart preservation, legacy-zero repair, missing-battery
+recovery, and read-only metadata.
+
+On the device, the previously failing session-bus test passes. After reboot,
+the startup trace captured Steam's two `-1` requests; the hardware target
+remained 100%, battery power stayed around 36.8 W, and stored energy rose.
