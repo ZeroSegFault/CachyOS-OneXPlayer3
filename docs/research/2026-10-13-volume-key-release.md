@@ -41,5 +41,10 @@ Shell syntax, ShellCheck and whitespace checks pass. Live hardware verification
 must include repeated rapid taps in both directions, checking for paired press
 and release events and that neither key remains held after release. A userspace
 synthetic keyboard does not exercise the EC/i8042/atkbd path, so it would not be
-a meaningful automated regression test for this fault. Post-fix physical rapid-tap
-verification is pending; the first recording window expired without new presses.
+a meaningful automated regression test for this fault.
+
+After applying the fix, the user reported that the sticking seemed fixed. A
+follow-up `EVIOCGKEY` assertion passed: neither volume button remained held.
+The post-fix event-recording windows expired without capturing presses, so paired
+events during the user's retest were not recorded. Longer-term recurrence remains
+unverified.
