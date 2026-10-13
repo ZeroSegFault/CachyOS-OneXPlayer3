@@ -38,6 +38,7 @@ Running `./install.sh` again is always safe: it only changes what isn't already 
 | Decky Loader | Plugin menu in the Quick Access Menu. |
 | Quiet boot | No boot menu or text: firmware logo, splash animation, Game Mode. |
 | Speakers | Unmuted on first run. |
+| Volume buttons | Prevents stuck volume changes after release. Tap repeatedly to adjust; holding may no longer repeat. |
 | Fingerprint (experimental, opt-in) | Unlocks the Desktop Mode lock screen. Turn on with `OXP3_FINGERPRINT=1 ./install.sh --only 85-fingerprint`, then enrol: `fprintd-enroll -f right-index-finger`. sudo and logins stay password-only. |
 
 **Not possible yet:** the back buttons M1/M2 (waiting for an upstream kernel driver fix; the installer tells you when your kernel has it), RGB lighting control, and holding the power button for the power menu (the hardware only reports short presses). Use Steam button → Power instead.
