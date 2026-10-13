@@ -11,6 +11,7 @@ if install_file "$FILES_DIR/etc/udev/hwdb.d/61-oxp3-volume.hwdb" \
   # Reload only the AT keyboard, leaving controller devices alone.
   as_root udevadm trigger --action=change --subsystem-match=input --parent-match=/sys/devices/platform/i8042
   as_root udevadm settle
+  log "tap each volume button once to clear any press stuck before the rule was loaded"
 fi
 
 ok "volume-key force-release rule installed"

@@ -28,6 +28,11 @@ The live `force_release` list becomes `174,176,369-370`, and udev exposes
 `KEYBOARD_KEY_ae=!volumedown` and `KEYBOARD_KEY_b0=!volumeup`. A second module run
 does not rewrite the rule or reload devices. No reboot is needed.
 
+Loading the rule does not clear keys already latched as pressed. Tap each button
+once after applying it. During diagnosis, sending one release event for each
+latched volume key cleared the old state, confirmed by `EVIOCGKEY`; that alone
+does not verify future physical taps.
+
 Tradeoff: holding a button may no longer repeat. Repeated taps still adjust volume.
 
 ## Verification
@@ -36,4 +41,5 @@ Shell syntax, ShellCheck and whitespace checks pass. Live hardware verification
 must include repeated rapid taps in both directions, checking for paired press
 and release events and that neither key remains held after release. A userspace
 synthetic keyboard does not exercise the EC/i8042/atkbd path, so it would not be
-a meaningful automated regression test for this fault.
+a meaningful automated regression test for this fault. Post-fix physical rapid-tap
+verification is pending; the first recording window expired without new presses.
